@@ -1658,23 +1658,75 @@ window['__onGCastApiAvailable'] = function(isAvailable) {
       });
       castAvailable = true;
       updateCastButtonVisibility();
+      castEscucharSesion_();
     } catch (e) {}
   }
 };
 
+// --- Transmisión activa: se manda el contenido nuevo al Chromecast sin tener que volver a compartir ---
+function castSesion_() {
+  try { return cast.framework.CastContext.getInstance().getCurrentSession() || null; } catch (e) { return null; }
+}
+
+function castEnviarActual_() {
+  const session = castSesion_();
+  if (!session || !currentPlayableUrl) return Promise.resolve(false);
+  const mediaInfo = new chrome.cast.media.MediaInfo(currentPlayableUrl, currentPlayableContentType);
+  mediaInfo.streamType = (currentPlayableStreamType === 'LIVE') ? chrome.cast.media.StreamType.LIVE : chrome.cast.media.StreamType.BUFFERED;
+  mediaInfo.metadata = new chrome.cast.media.GenericMediaMetadata();
+  mediaInfo.metadata.title = currentCanalNombre || 'FlixCr';
+  const request = new chrome.cast.media.LoadRequest(mediaInfo);
+  request.autoplay = true;
+  try { const v = getVideoEl(); if (v) { v.pause(); } } catch (e) {}
+  castPintarBarra_(true, currentCanalNombre || 'FlixCr');
+  return session.loadMedia(request).then(() => true).catch(err => { alert('No se pudo transmitir: ' + err); return false; });
+}
+
 castBtn.addEventListener('click', () => {
   if (!currentPlayableUrl) return;
   const castContext = cast.framework.CastContext.getInstance();
-  castContext.requestSession().then(() => {
-    const session = castContext.getCurrentSession();
-    const mediaInfo = new chrome.cast.media.MediaInfo(currentPlayableUrl, currentPlayableContentType);
-    mediaInfo.streamType = (currentPlayableStreamType === 'LIVE') ? chrome.cast.media.StreamType.LIVE : chrome.cast.media.StreamType.BUFFERED;
-    mediaInfo.metadata = new chrome.cast.media.GenericMediaMetadata();
-    mediaInfo.metadata.title = currentCanalNombre || 'FlixCr';
-    const request = new chrome.cast.media.LoadRequest(mediaInfo);
-    session.loadMedia(request).catch(err => alert('No se pudo transmitir: ' + err));
-  }).catch(() => {});
+  castContext.requestSession().then(() => { castEnviarActual_(); }).catch(() => {});
 });
+
+// Barra de control de la transmisión (volumen, silencio, pausa, detener). Solo se ve mientras se transmite.
+let castBarra = null, castPlayer = null, castCtrl = null;
+function castPintarBarra_(visible, titulo) {
+  if (!castBarra) {
+    castBarra = document.createElement('div');
+    castBarra.id = 'cast-bar';
+    castBarra.style.cssText = 'display:none;position:fixed;left:0;right:0;bottom:0;z-index:9500;background:#1d1338;border-top:1px solid #3b2d63;padding:8px 12px;align-items:center;gap:10px;flex-wrap:wrap;color:#f4f1ff;font:600 13px system-ui,sans-serif;';
+    castBarra.innerHTML = '<span id="cast-titulo" style="flex:1 1 120px;min-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>'
+      + '<button type="button" id="cast-pp" title="Pausa/Play" style="padding:6px 10px;">⏯</button>'
+      + '<button type="button" id="cast-mute" title="Silencio" style="padding:6px 10px;">🔊</button>'
+      + '<input type="range" id="cast-vol" min="0" max="100" value="60" style="flex:1 1 110px;max-width:220px;" aria-label="Volumen del Chromecast">'
+      + '<button type="button" id="cast-stop" title="Dejar de transmitir" style="padding:6px 10px;">⏹ Detener</button>';
+    document.body.appendChild(castBarra);
+    try {
+      castPlayer = new cast.framework.RemotePlayer();
+      castCtrl = new cast.framework.RemotePlayerController(castPlayer);
+      castCtrl.addEventListener(cast.framework.RemotePlayerEventType.VOLUME_LEVEL_CHANGED, () => { document.getElementById('cast-vol').value = Math.round((castPlayer.volumeLevel || 0) * 100); });
+      castCtrl.addEventListener(cast.framework.RemotePlayerEventType.IS_MUTED_CHANGED, () => { document.getElementById('cast-mute').textContent = castPlayer.isMuted ? '🔇' : '🔊'; });
+    } catch (e) {}
+    document.getElementById('cast-vol').addEventListener('input', e => {
+      try { castPlayer.volumeLevel = Number(e.target.value) / 100; castCtrl.setVolumeLevel(); } catch (x) {}
+    });
+    document.getElementById('cast-mute').addEventListener('click', () => { try { castCtrl.muteOrUnmute(); } catch (x) {} });
+    document.getElementById('cast-pp').addEventListener('click', () => { try { castCtrl.playOrPause(); } catch (x) {} });
+    document.getElementById('cast-stop').addEventListener('click', () => { try { cast.framework.CastContext.getInstance().endCurrentSession(true); } catch (x) {} });
+  }
+  castBarra.style.display = visible ? 'flex' : 'none';
+  document.body.style.paddingBottom = visible ? '64px' : '';
+  if (visible) document.getElementById('cast-titulo').textContent = '📺 ' + (titulo || 'Transmitiendo');
+}
+function castEscucharSesion_() {
+  try {
+    cast.framework.CastContext.getInstance().addEventListener(cast.framework.CastContextEventType.SESSION_STATE_CHANGED, e => {
+      const st = e.sessionState, SS = cast.framework.SessionState;
+      if (st === SS.SESSION_STARTED || st === SS.SESSION_RESUMED) castPintarBarra_(true, currentCanalNombre);
+      else if (st === SS.SESSION_ENDED) castPintarBarra_(false);
+    });
+  } catch (e) {}
+}
 
 function setupAirplayForVideo(videoEl) {
   if (!videoEl || !window.WebKitPlaybackTargetAvailabilityEvent) {
@@ -2562,6 +2614,12 @@ function reproducirStream(s, autoplay) {
     currentPlayableUrl = '';
   }
   updateCastButtonVisibility();
+
+  if (currentPlayableUrl && castSesion_()) {   // transmitiendo: el nuevo canal/película se manda al Chromecast sin volver a compartir
+    container.querySelectorAll('iframe').forEach(el => el.remove());
+    castEnviarActual_();
+    return;
+  }
 
   if (s.type === 'iframe') {
     container.querySelectorAll('video, iframe').forEach(el => el.remove());
