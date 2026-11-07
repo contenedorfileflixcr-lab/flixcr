@@ -1699,14 +1699,29 @@ function castPintarBarra_(visible, titulo) {
       + '<button type="button" id="cast-pp" title="Pausa/Play" style="padding:6px 10px;">⏯</button>'
       + '<button type="button" id="cast-mute" title="Silencio" style="padding:6px 10px;">🔊</button>'
       + '<input type="range" id="cast-vol" min="0" max="100" value="60" style="flex:1 1 110px;max-width:220px;" aria-label="Volumen del Chromecast">'
-      + '<button type="button" id="cast-stop" title="Dejar de transmitir" style="padding:6px 10px;">⏹ Detener</button>';
+      + '<button type="button" id="cast-stop" title="Dejar de transmitir" style="padding:6px 10px;">⏹ Detener</button>'
+      + '<div id="cast-seekrow" style="display:none;flex:1 1 100%;align-items:center;gap:8px;">'
+      + '<button type="button" id="cast-back" title="Retroceder 10 s" style="padding:6px 10px;">⏪ 10</button>'
+      + '<span id="cast-t" style="min-width:48px;text-align:right;">0:00</span>'
+      + '<input type="range" id="cast-seek" min="0" max="1000" value="0" style="flex:1 1 auto;" aria-label="Posición">'
+      + '<span id="cast-d" style="min-width:48px;">0:00</span>'
+      + '<button type="button" id="cast-fwd" title="Adelantar 10 s" style="padding:6px 10px;">10 ⏩</button></div>';
     document.body.appendChild(castBarra);
     try {
       castPlayer = new cast.framework.RemotePlayer();
       castCtrl = new cast.framework.RemotePlayerController(castPlayer);
       castCtrl.addEventListener(cast.framework.RemotePlayerEventType.VOLUME_LEVEL_CHANGED, () => { document.getElementById('cast-vol').value = Math.round((castPlayer.volumeLevel || 0) * 100); });
       castCtrl.addEventListener(cast.framework.RemotePlayerEventType.IS_MUTED_CHANGED, () => { document.getElementById('cast-mute').textContent = castPlayer.isMuted ? '🔇' : '🔊'; });
+      const RPE = cast.framework.RemotePlayerEventType;
+      castCtrl.addEventListener(RPE.CURRENT_TIME_CHANGED, castActualizarSeek_);
+      castCtrl.addEventListener(RPE.DURATION_CHANGED, castActualizarSeek_);
+      castCtrl.addEventListener(RPE.IS_MEDIA_LOADED_CHANGED, castActualizarSeek_);
     } catch (e) {}
+    const sk = document.getElementById('cast-seek');
+    sk.addEventListener('input', () => { castArrastrando_ = true; const d = castPlayer.duration || 0; document.getElementById('cast-t').textContent = castFmt_(d * sk.value / 1000); });
+    sk.addEventListener('change', () => { castArrastrando_ = false; castSaltar_((castPlayer.duration || 0) * sk.value / 1000); });
+    document.getElementById('cast-back').addEventListener('click', () => castSaltar_((castPlayer.currentTime || 0) - 10));
+    document.getElementById('cast-fwd').addEventListener('click', () => castSaltar_((castPlayer.currentTime || 0) + 10));
     document.getElementById('cast-vol').addEventListener('input', e => {
       try { castPlayer.volumeLevel = Number(e.target.value) / 100; castCtrl.setVolumeLevel(); } catch (x) {}
     });
@@ -1715,8 +1730,30 @@ function castPintarBarra_(visible, titulo) {
     document.getElementById('cast-stop').addEventListener('click', () => { try { cast.framework.CastContext.getInstance().endCurrentSession(true); } catch (x) {} });
   }
   castBarra.style.display = visible ? 'flex' : 'none';
-  document.body.style.paddingBottom = visible ? '64px' : '';
+  const vod = visible && currentPlayableStreamType !== 'LIVE';   // adelantar/retroceder solo en películas y series
+  document.getElementById('cast-seekrow').style.display = vod ? 'flex' : 'none';
+  document.body.style.paddingBottom = visible ? (vod ? '112px' : '64px') : '';
   if (visible) document.getElementById('cast-titulo').textContent = '📺 ' + (titulo || 'Transmitiendo');
+}
+let castArrastrando_ = false;
+function castFmt_(sec) {
+  sec = Math.max(0, Math.floor(sec || 0));
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), x = sec % 60;
+  return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(x).padStart(2, '0');
+}
+function castSaltar_(t) {
+  try {
+    const d = castPlayer.duration || 0;
+    castPlayer.currentTime = Math.max(0, d ? Math.min(t, d - 1) : t);
+    castCtrl.seek();
+  } catch (e) {}
+}
+function castActualizarSeek_() {
+  if (!castPlayer || castArrastrando_) return;
+  const d = castPlayer.duration || 0, c = castPlayer.currentTime || 0;
+  document.getElementById('cast-t').textContent = castFmt_(c);
+  document.getElementById('cast-d').textContent = castFmt_(d);
+  document.getElementById('cast-seek').value = d ? Math.round(c / d * 1000) : 0;
 }
 function castEscucharSesion_() {
   try {
