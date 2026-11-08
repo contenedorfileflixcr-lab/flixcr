@@ -1671,7 +1671,13 @@ function castSesion_() {
 function castEnviarActual_() {
   const session = castSesion_();
   if (!session || !currentPlayableUrl) return Promise.resolve(false);
-  const mediaInfo = new chrome.cast.media.MediaInfo(currentPlayableUrl, currentPlayableContentType);
+  // El Chromecast usa la pista de audio por defecto del archivo: se le pide al Worker que deje como principal el idioma preferido (&l=)
+  let urlCast = currentPlayableUrl;
+  if (currentPlayableContentType === 'video/mp4' && /flixcr-video\./i.test(urlCast) && !/[?&]l=/.test(urlCast)) {
+    let pref = 'spa'; try { pref = localStorage.getItem('flixcr_audio_pref') || 'spa'; } catch (e) {}
+    urlCast += (urlCast.indexOf('?') === -1 ? '?' : '&') + 'l=' + encodeURIComponent(pref);
+  }
+  const mediaInfo = new chrome.cast.media.MediaInfo(urlCast, currentPlayableContentType);
   mediaInfo.streamType = (currentPlayableStreamType === 'LIVE') ? chrome.cast.media.StreamType.LIVE : chrome.cast.media.StreamType.BUFFERED;
   mediaInfo.metadata = new chrome.cast.media.GenericMediaMetadata();
   mediaInfo.metadata.title = currentCanalNombre || 'FlixCr';
