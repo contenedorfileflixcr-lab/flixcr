@@ -1056,11 +1056,10 @@ body.fs-active #btn-arriba { display: none; }
 @media (min-width: 1025px) { .home-tile { height: 150px !important; font-size: 20px !important; } .home-tile svg { width: 56px !important; height: 56px !important; } }
 body.v-inicio #channel-grid, body.v-subs #channel-grid { display: none !important; }
 body.v-subs .home-tiles, body.v-grid .home-tiles { display: none !important; }
-body.v-subs #suggestions-wrap, body.v-grid #suggestions-wrap { display: none !important; }
 body.v-inicio .chip-row, body.v-subs .chip-row { display: none !important; }
 body.v-grid #sub-tiles { display: none; }
 .menu-item:not(.active) > .submenu { display: none; }
-@media (max-width: 1024px) { .wrap > #sub-nav { order: 2; } }
+@media (max-width: 1024px) { .wrap > #sub-nav { order: 2; } body.v-subs #suggestions-wrap, body.v-grid #suggestions-wrap { display: none !important; } }
 .sub-head { display: flex; align-items: center; gap: 12px; margin: 14px 0 10px; }
 .sub-head h2 { margin: 0; font-size: 1.1rem; }
 .sub-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; margin-bottom: 18px; }
@@ -3040,10 +3039,13 @@ function applyFilters() {
   const term = currentSearch.trim();
   const isNumeric = term !== '' && /^\d+$/.test(term);
 
+  const tokens = term ? normSub_(term).split(' ').filter(Boolean) : [];
+  const puntos = new Map();
   streams = streamsAll.filter(s => {
     if (s.categoria !== currentCategory) return false;
 
-    if (currentSubcategory !== 'todos') {
+    // Con una búsqueda activa se busca en toda la categoría (no solo en la subcategoría abierta)
+    if (!term && currentSubcategory !== 'todos') {
       const k = normSub_(s.subcategoria);
       if (currentSubcategory === '__otras') { if (k) return false; }
       else if (k !== currentSubcategory) return false;
@@ -3051,16 +3053,14 @@ function applyFilters() {
 
     if (!term) return true;
 
-    const t = term.toLowerCase();
-    const nombreCoincide = (s.nombre || '').toLowerCase().includes(t) || (s.serie || '').toLowerCase().includes(t);
-
-    if (isNumeric && s.categoria === 'canal') {
-      const numeroCoincide = String(s.numero || '').trim() !== '' && String(s.numero).trim().startsWith(term);
-      return numeroCoincide || nombreCoincide;
-    }
-
-    return nombreCoincide;
+    if (isNumeric && s.categoria === 'canal' && String(s.numero || '').trim() !== '' && String(s.numero).trim().startsWith(term)) { puntos.set(s, -1); return true; }
+    const p = puntajeBusqueda_(s, tokens);
+    if (p < 0) return false;
+    puntos.set(s, p);
+    return true;
   });
+  // Las coincidencias exactas van primero; luego las aproximadas (errores de tipeo)
+  if (term) streams = streams.map((x, i) => [x, i]).sort((a, b) => (puntos.get(a[0]) - puntos.get(b[0])) || (a[1] - b[1])).map(x => x[0]);
   if (currentCategory === 'serie') streams = agruparSeries_(streams);
   renderGrid();
 }
@@ -3069,7 +3069,21 @@ searchInput.addEventListener('input', () => {
   currentSearch = searchInput.value;
   if (currentSearch.trim() && typeof vistaNav !== 'undefined' && vistaNav !== 'grid') {
     currentSubcategory = 'todos';
-    if (vistaNav === 'inicio') { const c = categoriaConResultados_(currentSearch); if (c) currentCategory = c; }   // desde el inicio se busca donde haya coincidencias
+    if (vistaNav === 'inicio') {   // desde el inicio se busca donde haya coincidencias
+      const c = categoriaConResultados_(currentSearch);
+      if (c) currentCategory = c;
+      else if (catEstado_['serie'] !== 'ok') {   // series aún sin descargar: se bajan y se vuelve a evaluar
+        cargarCategoria_('serie', () => {
+          if (!currentSearch.trim() || vistaNav !== 'grid') return;
+          const c2 = categoriaConResultados_(currentSearch);
+          if (c2 && c2 !== currentCategory) {
+            currentCategory = c2;
+            chipsWrap.querySelectorAll('.chip').forEach(x => x.classList.toggle('active', x.dataset.cat === c2));
+            applyFilters(); try { actualizarRuta_(); } catch (e) {}
+          }
+        });
+      }
+    }
     chipsWrap.querySelectorAll('.chip').forEach(c => c.classList.toggle('active', c.dataset.cat === currentCategory));
     mostrarVista_('grid');
   }
@@ -3617,13 +3631,60 @@ function mostrarVista_(v) {
   subNav.style.display = (v === 'inicio') ? 'none' : 'block';
 }
 
+// ---- Búsqueda tolerante: sin tildes, sin mayúsculas, palabras en cualquier orden, guiones/espacios y errores de tipeo ----
+function distEdicion_(a, b, max) {
+  if (Math.abs(a.length - b.length) > max) return max + 1;
+  let prev = new Array(b.length + 1), cur = new Array(b.length + 1);
+  for (let j = 0; j <= b.length; j++) prev[j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    cur[0] = i; let minFila = cur[0];
+    for (let j = 1; j <= b.length; j++) {
+      const c = a.charCodeAt(i - 1) === b.charCodeAt(j - 1) ? 0 : 1;
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + c);
+      if (cur[j] < minFila) minFila = cur[j];
+    }
+    if (minFila > max) return max + 1;
+    const t = prev; prev = cur; cur = t;
+  }
+  return prev[b.length];
+}
+// Devuelve -1 si no coincide; 0 = coincidencia exacta; mayor = más aproximada
+function puntajeBusqueda_(s, tokens) {
+  if (!tokens.length) return 0;
+  if (s._nb === undefined) {
+    s._nb = normSub_((s.nombre || '') + ' ' + (s.serie || ''));
+    s._nj = s._nb.replace(/ /g, '');
+    s._np = s._nb.split(' ').filter(Boolean);
+  }
+  let total = 0;
+  for (const t of tokens) {
+    if (s._nb.indexOf(t) !== -1) continue;
+    if (s._nj.indexOf(t) !== -1) { total += 0.5; continue; }            // "spiderman" ~ "Spider-Man"
+    const max = t.length >= 7 ? 2 : (t.length >= 4 ? 1 : 0);
+    if (!max) return -1;
+    let ok = false;
+    for (const w of s._np) {
+      if (distEdicion_(t, w, max) <= max || (w.length > t.length && distEdicion_(t, w.slice(0, t.length), max) <= max)) { ok = true; break; }
+    }
+    if (!ok) return -1;
+    total += 1;
+  }
+  return total;
+}
+
 // Categoría (entre las ya descargadas) donde la búsqueda tiene coincidencias: canales, películas, series
 function categoriaConResultados_(texto) {
-  const t = normSub_(texto), num = /^\d+$/.test(String(texto).trim());
+  const tokens = normSub_(texto).split(' ').filter(Boolean), num = /^\d+$/.test(String(texto).trim());
+  let mejor = null, mejorP = Infinity;
   for (const cat of ['canal', 'pelicula', 'serie']) {
-    if (streamsAll.some(s => s.categoria === cat && (normSub_(s.nombre).indexOf(t) !== -1 || normSub_(s.serie).indexOf(t) !== -1 || (num && cat === 'canal' && String(s.numero || '').indexOf(String(texto).trim()) === 0)))) return cat;
+    for (const s of streamsAll) {
+      if (s.categoria !== cat) continue;
+      let p = puntajeBusqueda_(s, tokens);
+      if (num && cat === 'canal' && String(s.numero || '').indexOf(String(texto).trim()) === 0) p = -1;
+      if (p >= 0 && p < mejorP) { mejorP = p; mejor = cat; if (p <= 0) return mejor; }
+    }
   }
-  return null;
+  return mejor;
 }
 
 function actualizarRuta_() {
