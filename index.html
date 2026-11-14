@@ -2,6 +2,15 @@
 <html>
 <head>
 <base target="_top">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#120b24">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="FlixCr">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" href="icons/icon-192.png">
 <script src="config.js"></script>
 <script>
 /* Emula google.script.run con fetch hacia la API de Apps Script (doPost). El servidor valida la sesión en cada petición. */
@@ -39,7 +48,7 @@
 </script>
 
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
+
 <title>FlixCr</title>
 <style>
 :root {
@@ -1078,6 +1087,21 @@ body.v-grid #sub-tiles { display: none; }
 .sub-tile.img::before { content: ''; position: absolute; inset: 0; background: linear-gradient(180deg, rgba(8,4,18,0) 35%, rgba(8,4,18,.88)); }
 .sub-tile.img span.sub-t { text-shadow: 0 1px 8px rgba(0,0,0,.9); text-align: left; color: #fff; }
 @media (max-width: 600px) { .sub-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; } .sub-tile { height: 96px; font-size: 14px; } }
+</style>
+<style>
+/* App instalada: sin bordes, respeta notch y barra inferior */
+body{padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right);overscroll-behavior-y:none}
+@media (display-mode: standalone),(display-mode: fullscreen){
+  #browser-banner{display:none !important}
+  body{padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom);-webkit-user-select:none;user-select:none}
+  input,textarea{-webkit-user-select:text;user-select:text}
+}
+#pwa-hint{position:fixed;left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom));z-index:99999;display:none;
+ background:#1a0f36;color:#e7ecf5;border:1px solid rgba(255,236,0,.45);border-radius:14px;padding:12px 14px;font:14px/1.35 system-ui,sans-serif;box-shadow:0 8px 24px rgba(0,0,0,.5)}
+#pwa-hint b{color:#ffec00}
+#pwa-hint .r{display:flex;gap:8px;margin-top:10px;justify-content:flex-end}
+#pwa-hint button{border:0;border-radius:8px;padding:8px 14px;font-weight:700;cursor:pointer}
+#pwa-hint .ok{background:#ffec00;color:#120b24}#pwa-hint .no{background:#2a1d4d;color:#e7ecf5}
 </style>
 </head>
 <body>
@@ -4314,5 +4338,32 @@ document.getElementById('alq-confirmar').addEventListener('click', () => {
 });
 </script>
 <button type="button" id="btn-arriba" aria-label="Volver arriba" title="Volver a los botones"><svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
+<div id="pwa-hint"></div>
+<script>
+(function(){
+  try{ if('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js'); }catch(e){}
+  var ua=navigator.userAgent, movil=/Android|iPhone|iPad|iPod/i.test(ua)||(navigator.maxTouchPoints>1&&/Mac/.test(ua));
+  var inst=matchMedia('(display-mode: standalone)').matches||matchMedia('(display-mode: fullscreen)').matches||navigator.standalone;
+  var box=document.getElementById('pwa-hint'), dif=null;
+  function visto(){try{return localStorage.getItem('pwaHint')}catch(e){return null}}
+  function marcar(){try{localStorage.setItem('pwaHint',String(Date.now()))}catch(e){}}
+  function mostrar(html,btn,fn){
+    box.innerHTML=html+'<div class="r"><button class="no">Ahora no</button>'+(btn?'<button class="ok">'+btn+'</button>':'')+'</div>';
+    box.style.display='block';
+    box.querySelector('.no').onclick=function(){box.style.display='none';marcar()};
+    var ok=box.querySelector('.ok'); if(ok) ok.onclick=function(){box.style.display='none';marcar();fn&&fn()};
+  }
+  if(!movil||inst) return;
+  window.addEventListener('beforeinstallprompt',function(e){
+    e.preventDefault(); dif=e;
+    if(!visto()) mostrar('📲 <b>Instala FlixCr</b> como app: pantalla completa y sin barra del navegador.','Instalar',function(){dif.prompt()});
+  });
+  if(/iPhone|iPad|iPod/i.test(ua)||(navigator.maxTouchPoints>1&&/Mac/.test(ua))){
+    setTimeout(function(){ if(!visto()) mostrar('📲 Para verla como app: toca <b>Compartir</b> ⬆️ y luego <b>Añadir a pantalla de inicio</b>.',null) },2500);
+  } else {
+    setTimeout(function(){ if(!dif&&!visto()) mostrar('📲 Para verla como app: menú ⋮ del navegador → <b>Instalar app</b> / <b>Añadir a pantalla de inicio</b>.',null) },3500);
+  }
+})();
+</script>
 </body>
 </html>
