@@ -1360,6 +1360,18 @@ var MP4Box=(()=>{var _t=Object.defineProperty;var Ko=Object.getOwnPropertyDescri
 <script src="https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1"></script>
 
 <script>
+// Mantiene Apps Script "caliente" (evita el arranque en frío de 2-5 s) cuando la web está en GitHub
+(function () {
+  if (!window.FLIXCR_API) return;
+  const ping = () => {
+    if (document.hidden) return;
+    try { fetch(window.FLIXCR_API + (String(window.FLIXCR_API).indexOf('?') > -1 ? '&' : '?') + 'api=ping', { mode: 'no-cors', cache: 'no-store' }).catch(() => {}); } catch (e) {}
+  };
+  setInterval(ping, 4 * 60 * 1000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) ping(); });
+  ping();
+})();
+
 const WORKER_BASE = 'https://square-hat-1b70.mypantallacr.workers.dev/hls?u=';
 const PROXY_HOSTS = new Set(['reborned.cc', 'reborned.cc:8443', 'live-stream.iblups.com', 'stream.castr.com', 'mdstrm.com']);
 
@@ -2648,9 +2660,72 @@ function loadStreamByIndex(idx, autoplay = false) {
   if (autoplay === true) subirAlReproductor();
 }
 
+// --- Medidor de tiempos (consola siempre; insignia en pantalla con ?t=1 o localStorage flixcr_t=1) ---
+let tInicio_ = 0, tMarcas_ = [], tListener_ = null;
+function tiempo_(etapa, reinicia) {
+  const ahora = performance.now();
+  if (reinicia) { tInicio_ = ahora; tMarcas_ = []; }
+  if (!tInicio_) return;
+  tMarcas_.push(etapa + ' ' + ((ahora - tInicio_) / 1000).toFixed(1) + 's');
+  console.log('[tiempo] ' + tMarcas_.join(' → '));
+  let on = false;
+  try { on = /[?&]t=1\b/.test(location.search) || localStorage.getItem('flixcr_t') === '1'; } catch (e) {}
+  if (!on) return;
+  let b = document.getElementById('badge-tiempo');
+  if (!b) {
+    b = document.createElement('div'); b.id = 'badge-tiempo';
+    b.style.cssText = 'position:fixed;left:8px;bottom:8px;z-index:99998;background:rgba(0,0,0,.8);color:#ffec00;font:12px/1.3 monospace;padding:6px 9px;border-radius:8px;max-width:92vw;pointer-events:none';
+    document.body.appendChild(b);
+  }
+  b.textContent = '⏱ ' + tMarcas_.join(' → ');
+}
+function marcarListo_() {
+  const v = document.querySelector('#video-container video');
+  if (!v) return;
+  if (tListener_) { try { tListener_.v.removeEventListener('playing', tListener_.f); } catch (e) {} }
+  const f = () => { tiempo_('video reproduciendo'); tListener_ = null; };
+  tListener_ = { v, f };
+  v.addEventListener('playing', f, { once: true });
+}
+
+// --- Resolución anticipada (películas/series): el enlace sellado se pide antes del clic y se reutiliza ---
+const resolverCache_ = {};            // clave -> { t, res } | { t, promesa }
+const RESOLVER_TTL_ = 90000;
+function claveResolver_(s) { return String(s.rid) + '|' + String(s.nombre); }
+function prefetchResolver_(s) {
+  try {
+    if (!s || !s.necesitaResolver || s.categoria === 'canal' || s.esSerie) return;
+    if (s.isPremium && !activeToken) return;
+    const k = claveResolver_(s);
+    const c = resolverCache_[k];
+    if (c && Date.now() - c.t < RESOLVER_TTL_) return;
+    const e = { t: Date.now(), res: null, cbs: [] };
+    resolverCache_[k] = e;
+    google.script.run
+      .withSuccessHandler(res => {
+        e.res = res; e.t = Date.now();
+        if (!res || !res.ok) delete resolverCache_[k];
+        const cbs = e.cbs; e.cbs = [];
+        cbs.forEach(f => f(res));
+      })
+      .withFailureHandler(() => { delete resolverCache_[k]; const cbs = e.cbs; e.cbs = []; cbs.forEach(f => f(null)); })
+      .obtenerUrlDisponible(s.nombre, mySessionId, [], activeUser, activeToken, s.rid);
+  } catch (e) {}
+}
+function usarResolverCache_(s, cb) {      // true si había caché (lista o en curso) y se usó
+  if (s.categoria === 'canal') return false;
+  const c = resolverCache_[claveResolver_(s)];
+  if (!c || Date.now() - c.t > RESOLVER_TTL_) return false;
+  if (c.res) { if (!c.res.ok) return false; delete resolverCache_[claveResolver_(s)]; cb(c.res); return true; }
+  c.cbs.push(res => { if (res && res.ok) cb(res); else loadStream(s, true, true); });
+  delete resolverCache_[claveResolver_(s)];
+  return true;
+}
+
 function loadStream(s, autoplay = false, esReintento = false) {
   if (!s) return;
   if (s.esSerie) { abrirSerie(s); return; }
+  if (!esReintento) tiempo_('clic', true);
   if (!esReintento) { delete failedCuentasPorCanal[s.nombre]; ocultarSinSenal_(true); fallosReprod = 0; }
 
   if (s.isPremium && !activeToken) {
@@ -2662,11 +2737,17 @@ function loadStream(s, autoplay = false, esReintento = false) {
 
   if (s.necesitaResolver) {
     const excluir = Array.from(failedCuentasPorCanal[s.nombre] || []);
+    if (!excluir.length && usarResolverCache_(s, res => {
+      tiempo_('enlace (anticipado)');
+      currentCuenta = res.cuenta;
+      reproducirStream({ ...s, url: res.url, type: res.type }, autoplay);
+    })) return;
     google.script.run
       .withSuccessHandler(res => {
         if (!res.ok) { if (res.requiereAlquiler) { mostrarAlquiler_(s, res); return; } if (res.vencida) { mostrarVencido(); return; }
           if (!res.error || /no hay m[aá]s cuentas|todas las cuentas|no hay cupos/i.test(res.error)) { mostrarSinSenal_(s, /todas las cuentas|no hay cupos/i.test(res.error || 'no hay cupos') ? 'ocupado' : 'sinsenal'); return; }
           alert(res.error); return; }
+        tiempo_('cuenta/enlace');
         currentCuenta = res.cuenta;
         reproducirStream({ ...s, url: res.url, type: res.type }, autoplay);
       })
@@ -2678,7 +2759,18 @@ function loadStream(s, autoplay = false, esReintento = false) {
   reproducirStream(s, autoplay);
 }
 
+function prefetchSiguiente_(s) {
+  try {
+    if (!serieAbierta || !s || !s.serie) return;
+    const lista = serieAbierta.episodios;
+    const i = lista.findIndex(e => e.nombre === s.nombre);
+    if (i >= 0 && lista[i + 1]) prefetchResolver_(lista[i + 1]);
+  } catch (e) {}
+}
 function reproducirStream(s, autoplay) {
+  reproGen_++;   // invalida la sonda multi-audio del contenido anterior
+  tiempo_('inicia reproductor');
+  setTimeout(() => prefetchSiguiente_(s), 20000);
   if (autoMudoLimpiar_) { try { autoMudoLimpiar_(); } catch (e) {} }  // si el arranque automático dejó el video en silencio, se restablece al cambiar de canal
   setMeta(s);
   destroyHls();
@@ -2713,6 +2805,7 @@ function reproducirStream(s, autoplay) {
   } else if (s.type === 'mp4') {
     reproducirArchivo(s.url, autoplay);
   }
+  marcarListo_();
 }
 
 // Películas/series: el enlace llega SELLADO desde el servidor (hacia tu Worker de video); aquí solo se reproduce.
@@ -2801,9 +2894,12 @@ function vigilarAudioArchivo_(v, url) {
   }, 500);
 }
 
+let reproGen_ = 0;
 function reproducirArchivo(url, autoplay) {
   const videoEl = ensureVideoEl();
   const registro = [];
+  let sonda = { terminada: false, cambio: false, pendienteFallo: null };
+  const genArchivo = ++reproGen_;
   const limpio = String(url).replace(/#.*$/, '');
   const etapas = [
     { n: 'directo', src: limpio },
@@ -2846,48 +2942,64 @@ function reproducirArchivo(url, autoplay) {
     console.warn(registro[registro.length - 1]);
     i++;
     if (i < etapas.length) return intentar();
-    videoEl.onerror = null;
-    // Libera la cuenta: si no reproduce, no debe seguir ocupando un cupo
-    currentCuenta = '';
-    try { enviarPulso(); } catch (x) {}
-    console.warn('Detalle técnico:\n' + registro.join('\n'));
-    ofrecerVlc_(limpio, registro);
+    const terminar = () => {
+      if (genArchivo !== reproGen_ || sonda.cambio) return;
+      videoEl.onerror = null;
+      // Libera la cuenta: si no reproduce, no debe seguir ocupando un cupo
+      currentCuenta = '';
+      try { enviarPulso(); } catch (x) {}
+      console.warn('Detalle técnico:\n' + registro.join('\n'));
+      ofrecerVlc_(limpio, registro);
+    };
+    if (!sonda.terminada) { sonda.pendienteFallo = terminar; return; }   // la sonda aún puede rescatar el video (p. ej. audio AC3 + AAC)
+    terminar();
   }
 
   // Si el MP4 trae varias pistas de audio (p. ej. inglés y español) se reproduce con selector de idioma.
   // Si algo falla, se vuelve al reproductor normal de siempre.
+  // Arranque inmediato con el reproductor normal; en paralelo se revisa si el MP4 trae varias pistas de audio.
+  // Solo si las trae (y el navegador puede), se pasa al reproductor con selector de idioma en el segundo en curso.
   const esMkv = /[?&]x=mkv\b/i.test(url);
   if (!esMkv && typeof FlixMA !== 'undefined' && window.MP4Box && window.MediaSource) {
-    const mio = ++reproToken;
     FlixMA.probar(limpio).then(pr => {
-      if (mio !== reproToken) return;
-      if (!pr) return intentar();
+      sonda.terminada = true;
+      if (genArchivo !== reproGen_) return;
+      if (!pr) { if (sonda.pendienteFallo) sonda.pendienteFallo(); return; }
+      sonda.cambio = true;
+      const t0 = videoEl.currentTime || 0;
+      const rep = !videoEl.paused || !!autoplay;
+      destroyHls();
+      try { videoEl.pause(); videoEl.removeAttribute('src'); videoEl.load(); } catch (e) {}
+      const mio = ++reproToken;
       let pintar = null;
       videoEl.onerror = null;
       const rp = FlixMA.crear(videoEl, limpio, pr, {
         onListo: () => { if (pintar) pintar(); },
         onFallo: (msg) => {
           if (mio !== reproToken) return;
-          const t = videoEl.currentTime || 0;
+          const t = videoEl.currentTime || t0;
           registro.push('multi-audio: ' + msg);
           FlixMA.destruir(); ocultarSelectorAudio_();
           try { videoEl.removeAttribute('src'); videoEl.load(); } catch (e) {}
-          i = 0;
+          i = 0; sonda.cambio = false;
           if (t > 1) videoEl.addEventListener('loadedmetadata', () => { try { videoEl.currentTime = t; } catch (e) {} }, { once: true });
           intentar();
         }
       });
       pintar = mostrarSelectorAudio_(rp);
       videoEl.onerror = () => rp.fallar('error de reproducción (' + (videoEl.error ? videoEl.error.code : '?') + ')');
-      rp.iniciar(0, FlixMA.elegirInicial(pr.audios).id, !!autoplay);
+      tiempo_('multi-audio activo');
+      rp.iniciar(t0, FlixMA.elegirInicial(pr.audios).id, rep);
     }).catch(e => {
-      if (mio !== reproToken) return;
+      sonda.terminada = true;
+      if (genArchivo !== reproGen_) return;
       registro.push('multi-audio: ' + (e && e.message || e));
-      intentar();
+      if (sonda.pendienteFallo) sonda.pendienteFallo();
     });
   } else {
-    intentar();
+    sonda.terminada = true;
   }
+  intentar();
 }
 
 // --- Render de categorías (chips) ---
@@ -3163,6 +3275,8 @@ function renderEpisodios_() {
     const t = document.createElement('span'); t.textContent = 'Episodio ' + (ep.episodio || '?');
     const s = document.createElement('small'); s.textContent = 'T' + ep.temporada + (ep.isPremium ? ' · ⭐ Premium' : '');
     b.appendChild(t); b.appendChild(s);
+    b.addEventListener('pointerdown', () => prefetchResolver_(ep));
+    b.addEventListener('mouseenter', () => prefetchResolver_(ep));
     b.addEventListener('click', () => { loadStream(ep, true); subirAlReproductor(); });
     episodeList.appendChild(b);
   });
