@@ -2898,7 +2898,7 @@ let reproGen_ = 0;
 function reproducirArchivo(url, autoplay) {
   const videoEl = ensureVideoEl();
   const registro = [];
-  let sonda = { terminada: false, cambio: false, pendienteFallo: null };
+  let sonda = { terminada: false, cambio: false, pendienteFallo: null, lanzada: false, lanzar: null };
   const genArchivo = ++reproGen_;
   const limpio = String(url).replace(/#.*$/, '');
   const etapas = [
@@ -2951,7 +2951,7 @@ function reproducirArchivo(url, autoplay) {
       console.warn('Detalle técnico:\n' + registro.join('\n'));
       ofrecerVlc_(limpio, registro);
     };
-    if (!sonda.terminada) { sonda.pendienteFallo = terminar; return; }   // la sonda aún puede rescatar el video (p. ej. audio AC3 + AAC)
+    if (!sonda.terminada) { sonda.pendienteFallo = terminar; if (sonda.lanzar) sonda.lanzar(); return; }   // la sonda aún puede rescatar el video (p. ej. audio AC3 + AAC)
     terminar();
   }
 
@@ -2960,7 +2960,10 @@ function reproducirArchivo(url, autoplay) {
   // Arranque inmediato con el reproductor normal; en paralelo se revisa si el MP4 trae varias pistas de audio.
   // Solo si las trae (y el navegador puede), se pasa al reproductor con selector de idioma en el segundo en curso.
   const esMkv = /[?&]x=mkv\b/i.test(url);
-  if (!esMkv && typeof FlixMA !== 'undefined' && window.MP4Box && window.MediaSource) {
+  const puedeSonda = !esMkv && typeof FlixMA !== 'undefined' && window.MP4Box && window.MediaSource;
+  const lanzarSonda = () => {
+    if (!puedeSonda || sonda.lanzada || genArchivo !== reproGen_) return;
+    sonda.lanzada = true;
     FlixMA.probar(limpio).then(pr => {
       sonda.terminada = true;
       if (genArchivo !== reproGen_) return;
@@ -2996,6 +2999,12 @@ function reproducirArchivo(url, autoplay) {
       registro.push('multi-audio: ' + (e && e.message || e));
       if (sonda.pendienteFallo) sonda.pendienteFallo();
     });
+  };
+  if (puedeSonda) {
+    // La revisión de pistas empieza cuando el video ya suena (así no compite por la conexión con el arranque) o a los 12 s
+    sonda.lanzar = lanzarSonda;
+    videoEl.addEventListener('playing', lanzarSonda, { once: true });
+    setTimeout(lanzarSonda, 12000);
   } else {
     sonda.terminada = true;
   }
