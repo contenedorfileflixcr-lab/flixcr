@@ -2960,7 +2960,9 @@ function reproducirArchivo(url, autoplay) {
   // Arranque inmediato con el reproductor normal; en paralelo se revisa si el MP4 trae varias pistas de audio.
   // Solo si las trae (y el navegador puede), se pasa al reproductor con selector de idioma en el segundo en curso.
   const esMkv = /[?&]x=mkv\b/i.test(url);
-  const puedeSonda = !esMkv && typeof FlixMA !== 'undefined' && window.MP4Box && window.MediaSource;
+  let sinSonda = false;
+  try { sinSonda = /[?&]sp=0\b/.test(location.search) || localStorage.getItem('flixcr_sp') === '0'; } catch (e) {}   // prueba: ?sp=0 desactiva la revisión de pistas de audio
+  const puedeSonda = !sinSonda && !esMkv && typeof FlixMA !== 'undefined' && window.MP4Box && window.MediaSource;
   const lanzarSonda = () => {
     if (!puedeSonda || sonda.lanzada || genArchivo !== reproGen_) return;
     sonda.lanzada = true;
