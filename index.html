@@ -2747,7 +2747,7 @@ function loadStream(s, autoplay = false, esReintento = false) {
         if (!res.ok) { if (res.requiereAlquiler) { mostrarAlquiler_(s, res); return; } if (res.vencida) { mostrarVencido(); return; }
           if (!res.error || /no hay m[aá]s cuentas|todas las cuentas|no hay cupos/i.test(res.error)) { mostrarSinSenal_(s, /todas las cuentas|no hay cupos/i.test(res.error || 'no hay cupos') ? 'ocupado' : 'sinsenal'); return; }
           alert(res.error); return; }
-        tiempo_('cuenta/enlace' + (res.ms !== undefined ? ' (servidor ' + (res.ms / 1000).toFixed(1) + 's)' : ''));
+        tiempo_('cuenta/enlace' + (res.ms !== undefined ? ' (servidor ' + (res.ms / 1000).toFixed(1) + 's' + (res.msd !== undefined ? ', datos ' + (res.msd / 1000).toFixed(1) + 's' : '') + ')' : ''));
         currentCuenta = res.cuenta;
         reproducirStream({ ...s, url: res.url, type: res.type }, autoplay);
       })
